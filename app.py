@@ -6,11 +6,14 @@ from datetime import datetime
 from binance.client import Client
 from binance.exceptions import BinanceAPIException
 from apscheduler.schedulers.background import BackgroundScheduler
+import sys
 
 load_dotenv()
 
-# 关键修复：告诉 Flask 去 templates 文件夹找网页
-app = Flask(__name__, template_folder='templates')
+# 修复版：用默认 template_folder，但显式设置 static_folder 和 root_path
+dir_path = os.path.dirname(os.path.abspath(__file__))
+app = Flask(__name__, static_folder=os.path.join(dir_path, 'static'), 
+            template_folder=os.path.join(dir_path, 'templates'))
 app.config['SECRET_KEY'] = 'change-this-secret-key-2025'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -36,9 +39,11 @@ with app.app_context():
 def get_client():
     key = os.getenv('BINANCE_API_KEY')
     secret = os.getenv('BINANCE_SECRET_KEY')
+    print(f"Debug: API Key loaded: {bool(key)}")  # 调试打印
     if not key or not secret:
         return None
-    return Client(key, secret)
+    testnet = os.getenv('TESTNET', 'False').lower() == 'true'
+    return Client(key, secret, testnet=testnet)
 
 @app.route('/')
 def index():
@@ -47,12 +52,11 @@ def index():
 
 @app.route('/sync', methods=['GET', 'POST'])
 def sync():
-    msg = ""
     if request.method == 'POST':
         client = get_client()
         if not client:
-            flash('API密钥未设置！', 'danger')
-            return redirect('/sync')
+            flash('API密钥未设置！请检查 Environment Variables。', 'danger')
+            return render_template('sync.html')
         try:
             start_str = request.form.get('start_time', '')
             start_ts = None
@@ -78,8 +82,10 @@ def sync():
                 added += 1
             db.session.commit()
             flash(f'同步完成！新增 {added} 笔交易', 'success')
+        except BinanceAPIException as e:
+            flash(f'币安API错误: {e.message}', 'danger')
         except Exception as e:
-            flash(f'同步失败：{str(e)}', 'danger')
+            flash(f'同步失败: {str(e)}', 'danger')
     return render_template('sync.html')
 
 @app.route('/stats')
@@ -99,4 +105,4 @@ def stats():
         count=len(trades))
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
