@@ -5,12 +5,12 @@ from datetime import datetime
 from binance.client import Client
 from dotenv import load_dotenv
 
-# 读取 .env 文件（最稳方式）
-load_dotenv()
+load_dotenv()  # 读取 .env 文件
 
 app = Flask(__name__)
-app.secret_key = 'super-secret-key'
+app.secret_key = '123456'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///data.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 class Trade(db.Model):
@@ -36,7 +36,7 @@ def get_client():
 
 @app.route('/')
 def index():
-    trades = Trade.query.order_by(Trade.time.desc()).all()
+    trades = Trade.query.order_by(Trade.time.desc()).limit(50).all()
     return render_template('index.html', trades=trades)
 
 @app.route('/sync', methods=['GET', 'POST'])
@@ -44,21 +44,31 @@ def sync():
     if request.method == 'POST':
         client = get_client()
         if not client:
-            flash('API密钥读取失败！请检查 .env 文件', 'danger')
+            flash('API密钥未设置！请检查 .env 文件或 Render 变量', 'danger')
         else:
             try:
                 start_str = request.form.get('start_time')
-                start_ts = None if not start_str else int(datetime.strptime(start_str, '%Y-%m-%d').timestamp() * 1000)
+                start_ts = None
+                if start_str:
+                    start_ts = int(datetime.strptime(start_str, '%Y-%m-%d').timestamp() * 1000)
                 raw = client.get_my_trades(limit=1000, startTime=start_ts)
                 added = 0
                 for t in raw:
-                    if not Trade.query.get(t['orderId']):
-                        trade = Trade(id=t['orderId'], symbol=t['symbol'], side='BUY' if t['isBuyer'] else 'SELL',
-                                    price=float(t['price']), qty=float(t['qty']), quote_qty=float(t['quoteQty']),
-                                    fee=float(t['commission']), fee_asset=t['commissionAsset'],
-                                    time=datetime.fromtimestamp(t['time']/1000))
-                        db.session.add(trade)
-                        added += 1
+                    if Trade.query.get(t['orderId']):
+                        continue
+                    trade = Trade(
+                        id=t['orderId'],
+                        symbol=t['symbol'],
+                        side='BUY' if t['isBuyer'] else 'SELL',
+                        price=float(t['price']),
+                        qty=float(t['qty']),
+                        quote_qty=float(t['quoteQty']),
+                        fee=float(t['commission'] or 0),
+                        fee_asset=t['commissionAsset'],
+                        time=datetime.fromtimestamp(t['time']/1000)
+                    )
+                    db.session.add(trade)
+                    added += 1
                 db.session.commit()
                 flash(f'同步成功！新增 {added} 笔交易', 'success')
             except Exception as e:
@@ -68,10 +78,11 @@ def sync():
 @app.route('/stats')
 def stats():
     trades = Trade.query.all()
-    total_fee = sum(t.fee for t in trades)
+    total_fee = sum(t.fee or 0 for t in trades)
     initial = float(os.getenv('INITIAL_CAPITAL', 10000))
     loss = round(total_fee / initial * 100, 4) if initial else 0
     return render_template('stats.html', total_fee=total_fee, loss=loss, count=len(trades), initial=initial)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
