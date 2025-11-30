@@ -1,18 +1,19 @@
 import os
 from dotenv import load_dotenv
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
-import requests
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
 from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
-app = Flask(__name__)
+# 关键修复：告诉 Flask 去 templates 文件夹找网页
+app = Flask(__name__, template_folder='templates')
 app.config['SECRET_KEY'] = 'change-this-secret-key-2025'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
 class Trade(db.Model):
@@ -57,18 +58,9 @@ def sync():
             start_ts = None
             if start_str:
                 start_ts = int(datetime.strptime(start_str, '%Y-%m-%d').timestamp() * 1000)
-            
-            all_trades = []
-            symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT']  # 可扩展
-            for sym in symbols:
-                try:
-                    trades = client.get_my_trades(symbol=sym, startTime=start_ts, limit=1000)
-                    all_trades.extend(trades)
-                except:
-                    continue
-            
+            trades = client.get_my_trades(limit=1000, startTime=start_ts)
             added = 0
-            for t in all_trades:
+            for t in trades:
                 if Trade.query.filter_by(id=t['orderId']).first():
                     continue
                 new_trade = Trade(
@@ -95,24 +87,16 @@ def stats():
     trades = Trade.query.all()
     total_fee = sum(t.fee for t in trades)
     initial = float(os.getenv('INITIAL_CAPITAL', 10000))
-    loss_rate = total_fee / initial * 100 if initial > 0 else 0
-    
-    # 简易盈亏计算
+    loss_rate = round(total_fee / initial * 100, 4) if initial > 0 else 0
     cost = sum(t.quote_qty + t.fee for t in trades if t.side == 'BUY')
     income = sum(t.quote_qty - t.fee for t in trades if t.side == 'SELL')
-    realized = income - cost
-    
+    realized = round(income - cost, 2)
     return render_template('stats.html', 
-        total_fee=round(total_fee,4),
-        loss_rate=round(loss_rate,4),
-        realized=round(realized,2),
+        total_fee=total_fee,
+        loss_rate=loss_rate,
+        realized=realized,
         initial=initial,
         count=len(trades))
-
-# 必须的模板路由
-@app.route('/templates/<path:filename>')
-def templates(filename):
-    return render_template(filename)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
